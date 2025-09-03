@@ -1,0 +1,567 @@
+#!/usr/bin/env python3
+
+from abc import ABC,abstractmethod
+import argparse
+import curses
+from io import TextIOWrapper
+import json
+import os
+from typing import ClassVar, NamedTuple, override
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+import re
+import sys
+import termios
+import tty
+
+class dff_event_enum(Enum):
+    key=1
+    redraw=2
+
+class dff_exit_enum(Enum):
+    # Also is the exit code
+    exit=1
+    back=2
+
+class colors(Enum):
+    none=-1
+    note=0
+    comment=1
+    normal=2
+    important=3
+    spec=4
+    spec_important=5
+    spec_comment=6
+    important_space=7
+
+class dff_event(NamedTuple):
+    type: dff_event_enum
+    data: str
+
+type dff_text_event=list[tuple[colors,str]]
+type dff_block_event=list[dff_text_event]
+
+class dff_eventdriver(ABC):
+    @abstractmethod
+    def get_event(self) -> dff_event:
+        raise NotImplementedError
+    @abstractmethod
+    def send_event(self, event: dff_block_event) -> None:
+        raise NotImplementedError
+    @abstractmethod
+    def gcol(self) -> int:
+        raise NotImplementedError
+    @abstractmethod
+    def grow(self) -> int:
+        raise NotImplementedError
+
+class dff_entry(NamedTuple):
+    pre: str
+    text: str
+    post: str
+
+class dff_history(NamedTuple):
+    slist: tuple[dff_entry, ...]
+    char: str
+    col: int
+
+@dataclass
+class dff:
+    slist: tuple[dff_entry, ...]
+    eventdriver: dff_eventdriver
+
+    ending: str
+    ending2: str
+
+    included: set[int] = field(init=False)
+    col: int = field(init=False)
+    history: list[dff_history] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.slist=tuple(sorted(set(self.slist),key=lambda x:x.text))
+        self.col=0
+        self.history=[]
+        self.inc_col_while_all_same()
+
+    SPECIAL_CHAR_COLOR_MAP: ClassVar[dict[colors, colors]]={
+        colors.normal: colors.spec,
+        colors.important: colors.spec_important,
+        colors.comment: colors.spec_comment,
+    }
+
+    @staticmethod
+    def handle_special_char(texts: dff_text_event):
+        escape={
+            '\n': '\\n',
+            '\r': '\\r',
+        } # TODO: make this an option
+        pat=rf'([{''.join(map(re.escape,escape.keys()))}])'
+        idx=0
+        while idx<len(texts):
+            color,text=texts[idx]
+            parts=re.split(pat,text)
+            if len(parts)==1:
+                idx+=1
+                continue
+            del texts[idx]
+            for i,txt in enumerate(parts):
+                idx+=1
+                if i%2==0:
+                    texts.insert(idx-1,(color,txt))
+                    continue
+                texts.insert(idx-1,(dff.SPECIAL_CHAR_COLOR_MAP.get(color,color),escape[txt]))
+        idx=0
+        while idx<len(texts):
+            color,text=texts[idx]
+            if color!=colors.important and color!=colors.spec_important:
+                idx+=1
+                continue
+            parts=text.split(' ')
+            if len(parts)==1:
+                idx+=1
+                continue
+            del texts[idx]
+            for i,txt in enumerate(parts):
+                idx+=1
+                if i%2==0:
+                    texts.insert(idx,(color,txt))
+                    continue
+                texts.insert(idx,(colors.important_space,' '))
+
+    def virtual_get(self, text: str, idx: int) -> str:
+        if len(text)<idx:
+            return self.ending2
+        elif len(text)==idx:
+            return self.ending
+        return text[idx]
+
+    def limit_and_get_width(self, texts: dff_text_event, max_width: int):
+        count=0
+        for i,(color,text) in enumerate(texts):
+            count+=len(text)
+            if count>max_width:
+                del texts[i:]
+                texts.append((color,text[:max_width-count]))
+                return max_width
+        return count
+
+    def all_same(self) -> bool:
+        if len(self.slist)==0 or len(self.slist)==1:
+            return False
+        char=self.virtual_get(self.slist[0].text,self.col)
+        for i in self.slist:
+            if self.virtual_get(i.text,self.col)!=char:
+                return False
+        return True
+    def inc_col_while_all_same(self) -> None:
+        while self.all_same():
+            self.col+=1
+    def draw(self) -> None:
+        if len(self.slist)==0:
+            self.eventdriver.send_event([[(colors.note,(' NO ITEMS ')[:self.eventdriver.gcol()])]])
+        max_width=self.eventdriver.gcol()
+        class dff_block(list[tuple[dff_text_event,int]]):
+            width: int
+        current_block:dff_block=dff_block()
+        blocks=[current_block]
+        current_block_width=0
+        for i in self.slist:
+            text: dff_text_event
+            if len(i.text)==self.col:
+                text=[
+                    (colors.comment,i.pre+i.text[:self.col]),
+                    (colors.spec_important,self.ending),
+                    (colors.comment,i.post)]
+            elif len(i.text)<self.col:
+                text=[
+                    (colors.comment,i.pre+i.text[:self.col]),
+                    (colors.spec_comment,self.ending+self.ending2*(self.col-len(i.text)-1)),
+                    (colors.spec_important,self.ending2),
+                    (colors.comment,i.post)]
+            else:
+                text=[
+                    (colors.comment,i.pre+i.text[:self.col]),
+                    (colors.important,i.text[self.col:self.col+1]),
+                    (colors.normal,i.text[self.col+1:]),
+                    (colors.comment,i.post)]
+            self.handle_special_char(text)
+            width=self.limit_and_get_width(text,max_width)
+            current_block_width=max(current_block_width,width)
+            current_block.append((text,width))
+            if (len(current_block)+1)>=self.eventdriver.grow():
+                current_block.width=current_block_width
+                max_width-=current_block_width+1
+                if max_width<=0:
+                    break
+                current_block=dff_block()
+                blocks.append(current_block)
+                current_block_width=0
+        else:
+            current_block.width=current_block_width
+        lines:dff_block_event=[]
+        for i in range(len(blocks[0])):
+            line:dff_text_event=[]
+            for block in blocks:
+                if len(block)>i:
+                    if len(line):
+                        line.append((colors.none,' '))
+                    text,width=block[i]
+                    line.extend(text)
+                    line.append((colors.none,' '*(block.width-width)))
+            lines.append(line)
+        if self.eventdriver.grow()!=1:
+            search=''.join(i.char for i in self.history)
+            lines.insert(0,[(colors.normal,(':'+search)[:self.eventdriver.gcol()])])
+        self.eventdriver.send_event(lines)
+    def add_to_history(self, key:str) -> None:
+        self.history.append(dff_history(self.slist,key,self.col))
+    def get_matching(self, key:str) -> tuple[dff_entry, ...]:
+        return tuple(i for i in self.slist if self.virtual_get(i.text,self.col)==key)
+    def send_key(self, key:str) -> str|None:
+        self.add_to_history(key)
+        new_slist=self.get_matching(key)
+        if not new_slist:
+            del self.history[-1]
+            return
+        if len(new_slist)==1:
+            return new_slist[0].text
+        self.col+=1
+        self.slist=new_slist
+        self.inc_col_while_all_same()
+    def back(self) -> bool:
+        if len(self.history)==0:
+            return False
+        self.slist=self.history[-1].slist
+        self.col=self.history[-1].col
+        del self.history[-1]
+        return True
+    def run(self, start_as_back: bool = False) -> str|dff_exit_enum:
+        # TODO: make this not just an option, but something more...
+        # E.G. return special value or return special exit code, e.g. 2 instead of 1 (already done)
+        exit_on_first_back=True
+
+        # TODO: make this also an option
+        skip_if_only_one=True
+
+        if len(self.slist)==1 and skip_if_only_one:
+            if start_as_back:
+                return dff_exit_enum.back
+            return self.slist[0].text
+        while True:
+            self.draw()
+            event=self.eventdriver.get_event()
+            if event.type==dff_event_enum.redraw:
+                continue
+            assert event.type==dff_event_enum.key
+            key=event.data
+            if key=='\x1b':
+                return dff_exit_enum.exit
+            elif key=='\x7f':
+                if self.back()==False and exit_on_first_back:
+                    return dff_exit_enum.back
+                continue
+            ret=self.send_key(key)
+            if ret:
+                return ret
+            self.inc_col_while_all_same()
+
+type dff_endings=tuple[str,str]
+
+def dir_run(eventdriver: dff_eventdriver, endings: dff_endings) -> str:
+    dir=Path('.').absolute()
+
+    # TODO: make this an option, it is for when the directory only includes one file, and when run it auto returns that file (even though you want to explore)
+    first_dont_skip_one=True
+
+    start_as_back=False
+    first=True
+    while True:
+        # TODO: implement hopping one element dir
+        # TODO: also implement hopping one element dir backwards
+        result=dff(tuple(dff_entry(
+            '/' if path.is_dir() else ' ',
+            path.name,
+            '') for path in dir.iterdir()),eventdriver,*endings).run(start_as_back)
+        first=False
+        if result==dff_exit_enum.exit:
+            return str(dir)
+        elif result==dff_exit_enum.back:
+            dir=dir.parent
+            start_as_back=True
+            continue
+        start_as_back=False
+        dir=dir.joinpath(result)
+        if not dir.is_dir():
+            return str(dir)
+
+class dff_test_eventdriver(dff_eventdriver):
+    @override
+    def get_event(self) -> dff_event:
+        with open("/dev/tty", "r") as file:
+            fd=file.fileno()
+            old=termios.tcgetattr(fd)
+            try:
+                _ = tty.setraw(fd)
+                ch = file.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            if ch=='\x03':
+                raise KeyboardInterrupt
+            return dff_event(dff_event_enum.key,ch)
+    @override
+    def send_event(self, event:dff_block_event):
+        style_map={
+            colors.none:'',
+            colors.note:'\x1b[43m',
+            colors.comment:'\x1b[2m',
+            colors.normal:'\x1b[0m',
+            colors.important:'\x1b[1m\x1b[34m',
+            colors.spec:'\x1b[7m',
+            colors.spec_important:'\x1b[7m\x1b[1m',
+            colors.spec_comment:'\x1b[7m\x1b[2m',
+            colors.important_space:'\x1b[41m',
+        }
+        print('+'+'-'*self.gcol()+'+',file=sys.stderr)
+        for e in event:
+            print('|',end='',file=sys.stderr)
+            l=0
+            for c,i in e:
+                l+=len(i)
+                print(style_map[c],end='',file=sys.stderr)
+                print(i,end='',file=sys.stderr)
+                print('\x1b[0m',end='',file=sys.stderr)
+            print(' '*(self.gcol()-l)+'|',file=sys.stderr)
+        print('+'+'-'*self.gcol()+'+',file=sys.stderr)
+    @override
+    def grow(self):
+        return 10
+    @override
+    def gcol(self):
+        return 80
+
+class dff_json_eventdriver(dff_eventdriver):
+    i: TextIOWrapper
+    o: TextIOWrapper
+    col: int
+    row: int
+    def __init__(self, i: TextIOWrapper, o: TextIOWrapper):
+        self.i=i
+        self.o=self.o
+        js=json.load(self.i)  # pyright: ignore[reportAny]
+        self.col=js["col"]
+        self.row=js["row"]
+    @override
+    def get_event(self) -> dff_event:
+        js: dict[str,int]=json.load(self.i)  # pyright: ignore[reportAny]
+        self.col=js["col"]
+        self.row=js["row"]
+        if js.get("key"):
+            return dff_event(dff_event_enum.key,chr(js["key"]))
+        return dff_event(dff_event_enum.redraw,"")
+    @override
+    def send_event(self, event: dff_block_event) -> None:
+        json.dump(['event',event],self.o)
+    def done(self, ret: str|dff_exit_enum) -> None:
+        json.dump(['exit',ret],self.o)
+    @override
+    def gcol(self) -> int:
+        return self.col
+    @override
+    def grow(self) -> int:
+        return self.row
+
+def remote_opt_parse(opts: str)->tuple[Path,Path]:
+    input,output=opts.split('//')
+    input_path=Path(input)
+    output_path=Path(output)
+    if not input_path.exists():
+        os.mkfifo(input_path)
+    elif not input_path.is_fifo():
+        raise Exception(f"Input file {input} is not fifo")
+    if not output_path.exists():
+        os.mkfifo(output_path)
+    elif not output_path.is_fifo():
+        raise Exception(f"Output file {output} is not fifo")
+    return input_path,output_path
+
+def remote_run(entries: tuple[dff_entry,...]|None,args:str,endings:dff_endings):
+    input_path,output_path=remote_opt_parse(args)
+    with open(input_path) as input, open(output_path) as output:
+        eventdriver=dff_json_eventdriver(input,output)
+        if entries:
+            d=dff(entries,eventdriver,*endings)
+            ret=d.run()
+            eventdriver.done(ret)
+        else:
+            ret_path=dir_run(eventdriver,endings)
+            eventdriver.done(ret_path)
+
+DEFAULT_STYLES:dict[colors,tuple[int,...]]={
+    # Blue(important): 94,104
+    # Grey(comment): 90
+    # Red(spec): 91,31
+
+    colors.none: (90,),
+    colors.note: (43,),
+    colors.comment: (90,),
+    colors.normal: (),
+    colors.important: (1,94,),
+    colors.spec: (91,),
+    colors.spec_important: (91,1,104,),
+    colors.spec_comment: (31,),
+    colors.important_space: (104,),
+}
+
+def parse_style_opt(style: str|None) -> dict[colors,tuple[int,...]]:
+    if style is None:
+        return DEFAULT_STYLES.copy()
+    def to_int_or_error(n: str) -> int:
+        return int(n)
+    style_map=DEFAULT_STYLES.copy()
+    for i in style.split(';'):
+        name,color=i.split(':')
+        if name in colors._member_names_:
+            raise Exception(f"Color {name} not a style")
+        style_map[colors[name]]=tuple(to_int_or_error(i) for i in color.split(','))
+    return style_map
+
+def style_to_curses(style: dict[colors,tuple[int,...]], attrs: dict[colors,int]) -> None:
+    for color,codes in style.items():
+        attrs[color]=0
+        bg=-1
+        fg=-1
+        for code in codes:
+            match code:
+                case 0:
+                    attrs[color]|=curses.A_NORMAL
+                case 1:
+                    attrs[color]|=curses.A_BOLD
+                case 2:
+                    attrs[color]|=curses.A_DIM
+                case 3:
+                    attrs[color]|=curses.A_ITALIC
+                case 4:
+                    attrs[color]|=curses.A_UNDERLINE
+                case 5:
+                    attrs[color]|=curses.A_BLINK
+                case 7:
+                    attrs[color]|=curses.A_REVERSE
+                case 8:
+                    attrs[color]|=curses.A_INVIS
+                case x if x>=30 and x<=37:
+                    fg=x-30
+                case x if x>=40 and x<=47:
+                    bg=x-40
+                case x if x>=90 and x<=97:
+                    fg=x-90+8
+                case x if x>=100 and x<=107:
+                    bg=x-100+8
+                case _:
+                    pass
+        if fg!=-1 or bg!=-1:
+            curses.init_pair(100+color.value,fg,bg)
+            attrs[color]|=curses.color_pair(100+color.value)
+
+class dff_text_eventdriver(dff_eventdriver):
+    attrs: dict[colors,int]
+    win: curses.window
+    def __init__(self, attrs: dict[colors,int], win: curses.window):
+        self.attrs=attrs
+        self.win=win
+    @override
+    def get_event(self) -> dff_event:
+        ch=self.win.get_wch()
+        if type(ch)==str:
+            return dff_event(dff_event_enum.key,ch)
+        elif ch==curses.KEY_BACKSPACE:
+            return dff_event(dff_event_enum.key,'\x7f')
+        else:
+            return dff_event(dff_event_enum.redraw,"")
+    @override
+    def send_event(self, event: dff_block_event) -> None:
+        self.win.clear()
+        for y_rev,e in enumerate(event[::-1]):
+            self.win.move(len(event)-y_rev-1,1)
+            for i in e:
+                color,text=i
+                self.win.addstr(text,self.attrs[color])
+    @override
+    def gcol(self) -> int:
+        return self.win.getmaxyx()[1]
+    @override
+    def grow(self) -> int:
+        return self.win.getmaxyx()[0]
+
+def curses_wrapped_run(win: curses.window, entries: tuple[dff_entry,...]|None, style_opt:str|None, endings: dff_endings)->dff_exit_enum|str:
+    curses.set_escdelay(50)
+    win.notimeout(False)
+    curses.use_default_colors()
+
+    style=parse_style_opt(style_opt)
+    attrs:dict[colors,int]={}
+    style_to_curses(style,attrs)
+
+    eventdriver=dff_text_eventdriver(attrs,win)
+
+    if entries:
+        d=dff(entries,eventdriver,*endings)
+        ret=d.run()
+    else:
+        ret=dir_run(eventdriver,endings)
+    return ret
+
+def curses_run(entries: tuple[dff_entry,...]|None, style: str|None, endings: dff_endings) -> str|dff_exit_enum:
+    with open('/dev/tty','r') as fd:
+        old_stdout=os.dup(1)
+        old_stdin=os.dup(0)
+        _=os.dup2(2,1)
+        _=os.dup2(fd.fileno(),0)
+        try:
+            ret=curses.wrapper(curses_wrapped_run,entries,style,endings)
+        finally:
+            _=os.dup2(old_stdout,1)
+            _=os.dup2(old_stdin,0)
+    return ret
+
+def parse_endings_opt(endings_opt: str) -> tuple[str,str]:
+    ending1,ending2=endings_opt
+    return ending1,ending2
+
+def main():
+    parser=argparse.ArgumentParser()
+    _=parser.add_argument('--remote',
+                        help='TODO: desc')
+    _=parser.add_argument('--style',
+                        help='TODO: desc')
+    ending_default='?&'
+    _=parser.add_argument('-e','--ending',default=ending_default,
+                          help='TODO: desc')
+    _=parser.add_argument('-0',
+                          help='TODO: desc')
+
+    args = parser.parse_args()
+
+    remote_args: str|None=args.remote  # pyright: ignore[reportAny]
+    style_args: str|None=args.style  # pyright: ignore[reportAny]
+    endings_args: str=args.ending  # pyright: ignore[reportAny]
+
+    if sys.stdin.isatty():
+        entries=None
+    else:
+        entries=tuple(dff_entry('',i.rstrip('\n'),'') for i in sys.stdin)
+
+    endings=parse_endings_opt(endings_args)
+
+    if remote_args:
+        remote_run(entries,remote_args,endings)
+        return
+
+    ret=curses_run(entries,style_args,endings)
+    if isinstance(ret,str):
+        print(ret)
+    else:
+        sys.exit(ret.value)
+
+if __name__=='__main__':
+    main()
