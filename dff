@@ -531,23 +531,26 @@ def parse_endings_opt(endings_opt: str) -> tuple[str,str]:
 def main():
     parser=argparse.ArgumentParser()
     _=parser.add_argument('--remote',
-                        help='TODO: desc')
+                        help='Used by external applications to establish a connection, not intended to be used by end user')
     _=parser.add_argument('--style',
-                        help='TODO: desc')
+                        help=f'A table of colorname to CSI-m codes, where delimiter is `;` and assignment is `:` (example: `normal:92;comment:32`). Only a limited number of CSI-m codes are supported. Possible colornames are: {', '.join(colors._member_names_)}.')
     ending_default='?&'
     _=parser.add_argument('-e','--ending',default=ending_default,
-                          help='TODO: desc')
-    _=parser.add_argument('-0',
-                          help='TODO: desc')
+                          help=f'2 characters. Used as EOL and past-EOL. (default: `{ending_default}`)')
+    _=parser.add_argument('-0','--null',dest='zero',action='store_true',
+                          help='Input items are terminated by a null character instead of by newline.')
 
     args = parser.parse_args()
 
     remote_args: str|None=args.remote  # pyright: ignore[reportAny]
     style_args: str|None=args.style  # pyright: ignore[reportAny]
     endings_args: str=args.ending  # pyright: ignore[reportAny]
+    zero: bool=args.zero  # pyright: ignore[reportAny]
 
     if sys.stdin.isatty():
         entries=None
+    elif zero:
+        entries=tuple(dff_entry('',i.rstrip('\n'),'') for i in sys.stdin.read().split('\0'))
     else:
         entries=tuple(dff_entry('',i.rstrip('\n'),'') for i in sys.stdin)
 
