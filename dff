@@ -346,15 +346,23 @@ class dff_json_eventdriver(dff_eventdriver):
     o: TextIOWrapper
     col: int
     row: int
+    entries: tuple[dff_entry,...]|None
+    def get_line(self) -> str:
+        return self.i.readline()
+    def write_line(self, text: str):
+        _=self.o.write(text+'\n')
+        self.o.flush()
     def __init__(self, i: TextIOWrapper, o: TextIOWrapper):
         self.i=i
-        self.o=self.o
-        js=json.load(self.i)  # pyright: ignore[reportAny]
+        self.o=o
+        self.write_line(json.dumps(['ready']))
+        js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
         self.col=js["col"]
         self.row=js["row"]
+        self.entries=js.get("entries",None)  # pyright: ignore[reportAttributeAccessIssue]
     @override
     def get_event(self) -> dff_event:
-        js: dict[str,int]=json.load(self.i)  # pyright: ignore[reportAny]
+        js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
         self.col=js["col"]
         self.row=js["row"]
         if js.get("key"):
@@ -362,9 +370,11 @@ class dff_json_eventdriver(dff_eventdriver):
         return dff_event(dff_event_enum.redraw,"")
     @override
     def send_event(self, event: dff_block_event) -> None:
-        json.dump(['event',event],self.o)
+        self.write_line(json.dumps(['event',event],cls=type('',(json.JSONEncoder,),{
+            "default": (lambda sekf,x: x.value if isinstance(x,Enum) else x)  # pyright: ignore[reportUnknownLambdaType, reportAny]
+        })))
     def done(self, ret: str|dff_exit_enum) -> None:
-        json.dump(['exit',ret],self.o)
+        self.write_line(json.dumps(['exit',ret]))
     @override
     def gcol(self) -> int:
         return self.col
@@ -372,31 +382,16 @@ class dff_json_eventdriver(dff_eventdriver):
     def grow(self) -> int:
         return self.row
 
-def remote_opt_parse(opts: str)->tuple[Path,Path]:
-    input,output=opts.split('//')
-    input_path=Path(input)
-    output_path=Path(output)
-    if not input_path.exists():
-        os.mkfifo(input_path)
-    elif not input_path.is_fifo():
-        raise Exception(f"Input file {input} is not fifo")
-    if not output_path.exists():
-        os.mkfifo(output_path)
-    elif not output_path.is_fifo():
-        raise Exception(f"Output file {output} is not fifo")
-    return input_path,output_path
-
-def remote_run(entries: tuple[dff_entry,...]|None,args:str,endings:dff_endings):
-    input_path,output_path=remote_opt_parse(args)
-    with open(input_path) as input, open(output_path) as output:
-        eventdriver=dff_json_eventdriver(input,output)
-        if entries:
-            d=dff(entries,eventdriver,*endings)
-            ret=d.run()
-            eventdriver.done(ret)
-        else:
-            ret_path=dir_run(eventdriver,endings)
-            eventdriver.done(ret_path)
+def json_run(endings:dff_endings):
+    eventdriver=dff_json_eventdriver(sys.stdin,sys.stdout)  # pyright: ignore[reportArgumentType]
+    entries=eventdriver.entries
+    if entries:
+        d=dff(entries,eventdriver,*endings)
+        ret=d.run()
+        eventdriver.done(ret)
+    else:
+        ret_path=dir_run(eventdriver,endings)
+        eventdriver.done(ret_path)
 
 DEFAULT_STYLES:dict[colors,tuple[int,...]]={
     # Blue(important): 94,104
@@ -531,8 +526,8 @@ def parse_endings_opt(endings_opt: str) -> tuple[str,str]:
 
 def main():
     parser=argparse.ArgumentParser()
-    _=parser.add_argument('--remote',
-                        help='Used by external applications to establish a connection, not intended to be used by end user')
+    _=parser.add_argument('--json',action='store_true',
+                        help='Use json packets. Intended to be used by external applications, not intended to be used by end user')
     _=parser.add_argument('--style',
                         help=f'A table of colorname to CSI-m codes, where delimiter is `;` and assignment is `:` (example: `normal:92;comment:32`). Only a limited number of CSI-m codes are supported. Possible colornames are: {', '.join(colors._member_names_)}.')
     ending_default='?&'
@@ -543,10 +538,16 @@ def main():
 
     args = parser.parse_args()
 
-    remote_args: str|None=args.remote  # pyright: ignore[reportAny]
+    json_args: bool=args.json  # pyright: ignore[reportAny]
     style_args: str|None=args.style  # pyright: ignore[reportAny]
     endings_args: str=args.ending  # pyright: ignore[reportAny]
     zero: bool=args.zero  # pyright: ignore[reportAny]
+
+    endings=parse_endings_opt(endings_args)
+
+    if json_args:
+        json_run(endings)
+        return
 
     if sys.stdin.isatty():
         entries=None
@@ -555,11 +556,6 @@ def main():
     else:
         entries=tuple(dff_entry('',i.rstrip('\n'),'') for i in sys.stdin)
 
-    endings=parse_endings_opt(endings_args)
-
-    if remote_args:
-        remote_run(entries,remote_args,endings)
-        return
 
     ret=curses_run(entries,style_args,endings)
     if isinstance(ret,str):
