@@ -160,6 +160,7 @@ class dff:
     def draw(self) -> None:
         if len(self.slist)==0:
             self.eventdriver.send_event([[(colors.note,(' NO ITEMS ')[:self.eventdriver.gcol()])]])
+            return
         max_width=self.eventdriver.gcol()
         class dff_block(list[tuple[dff_text_event,int]]):
             width: int
