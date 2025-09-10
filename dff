@@ -12,8 +12,6 @@ from enum import Enum
 from pathlib import Path
 import re
 import sys
-import termios
-import tty
 
 class dff_event_enum(Enum):
     key=1
@@ -77,9 +75,7 @@ class dff_config(NamedTuple):
     }
 
     dir_first_skip_one: bool = False
-
-    #TODO
-    dir_print_current_directory: bool = False
+    dir_print_current_directory: bool = True
 
 @dataclass
 class dff:
@@ -87,6 +83,8 @@ class dff:
     eventdriver: dff_eventdriver
 
     conf: dff_config
+
+    prompt_pre: str|None = None
 
     included: set[int] = field(init=False)
     col: int = field(init=False)
@@ -226,7 +224,13 @@ class dff:
             lines.append(line)
         if self.eventdriver.grow()!=1:
             search=''.join(i.char for i in self.history)
-            lines.insert(0,[(colors.normal,(':'+search)[:self.eventdriver.gcol()])])
+            text=[
+                (colors.comment,self.prompt_pre or ''),
+                (colors.normal,':'+search)
+            ]
+            self.handle_special_char(text)
+            _=self.limit_and_get_width(text,self.eventdriver.gcol())
+            lines.insert(0,text)
         self.eventdriver.send_event(lines)
     def add_to_history(self, key:str) -> None:
         self.history.append(dff_history(self.slist,key,self.col))
@@ -285,8 +289,8 @@ def dir_run(eventdriver: dff_eventdriver, conf: dff_config) -> str:
             '/' if path.is_dir() else ' ',
             path.name,
             '') for path in dir.iterdir()),eventdriver,
-                   conf._replace(skip_one=False) if first and not conf.dir_first_skip_one else conf
-                   ).run(start_as_back)
+                   conf._replace(skip_one=False) if first and not conf.dir_first_skip_one else conf,
+                   str(dir) if conf.dir_print_current_directory else None).run(start_as_back)
         first=False
         if result==dff_exit_enum.exit:
             return str(dir)
