@@ -110,7 +110,6 @@ function M.run_dir(dir)
         if comp and comp.code==1 then
             vim.notify('dff python script errored:\n'..comp.stderr)
         end
-        ---TODO: print binary error, if it errors
         if vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_close(win,true)
         end
