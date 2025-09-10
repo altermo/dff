@@ -203,13 +203,16 @@ class dff:
         lines:dff_block_event=[]
         for i in range(len(blocks[0])):
             line:dff_text_event=[]
-            for block in blocks:
+            for j,block in enumerate(blocks):
                 if len(block)>i:
                     if len(line):
                         line.append((colors.none,' '))
                     text,width=block[i]
                     line.extend(text)
-                    line.append((colors.none,' '*(block.width-width)))
+                    if j==len(blocks)-1: pass
+                    elif j==len(blocks)-2 and i>=len(blocks[-1]): pass
+                    else:
+                        line.append((colors.none,' '*(block.width-width)))
             lines.append(line)
         if self.eventdriver.grow()!=1:
             search=''.join(i.char for i in self.history)
@@ -366,12 +369,15 @@ class dff_json_eventdriver(dff_eventdriver):
         self.col=js["col"]
         self.row=js["row"]
         if js.get("key"):
-            return dff_event(dff_event_enum.key,chr(js["key"]))
+            try:
+                return dff_event(dff_event_enum.key,chr(js["key"]))
+            except UnicodeDecodeError:
+                pass
         return dff_event(dff_event_enum.redraw,"")
     @override
     def send_event(self, event: dff_block_event) -> None:
         self.write_line(json.dumps(['event',event],cls=type('',(json.JSONEncoder,),{
-            "default": (lambda sekf,x: x.value if isinstance(x,Enum) else x)  # pyright: ignore[reportUnknownLambdaType, reportAny]
+            "default": (lambda _,x: x.value if isinstance(x,Enum) else x)  # pyright: ignore[reportUnknownLambdaType, reportAny]
         })))
     def done(self, ret: str|dff_exit_enum) -> None:
         self.write_line(json.dumps(['exit',ret]))
