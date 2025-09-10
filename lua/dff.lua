@@ -122,6 +122,6 @@ function M.run_dir(dir)
 end
 function M.file_expl(dir)
     local path=M.run_dir(dir)
-    vim.cmd.edit(path)
+    vim.cmd.edit(vim.uv.fs_realpath(path) or path)
 end
 return M
