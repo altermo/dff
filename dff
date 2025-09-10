@@ -66,13 +66,27 @@ class dff_history(NamedTuple):
     char: str
     col: int
 
+class dff_config(NamedTuple):
+    ending: str
+    ending2: str
+    skip_one: bool = True
+    exit_on_first_back: bool = True
+    escape: dict[str,str] = {
+        '\n': '\\n',
+        '\r': '\\r',
+    }
+
+    dir_first_skip_one: bool = False
+
+    #TODO
+    dir_print_current_directory: bool = False
+
 @dataclass
 class dff:
     slist: tuple[dff_entry, ...]
     eventdriver: dff_eventdriver
 
-    ending: str
-    ending2: str
+    conf: dff_config
 
     included: set[int] = field(init=False)
     col: int = field(init=False)
@@ -90,12 +104,8 @@ class dff:
         colors.comment: colors.spec_comment,
     }
 
-    @staticmethod
-    def handle_special_char(texts: dff_text_event):
-        escape={
-            '\n': '\\n',
-            '\r': '\\r',
-        } # TODO: make this an option
+    def handle_special_char(self,texts: dff_text_event):
+        escape=self.conf.escape
         pat=rf'([{''.join(map(re.escape,escape.keys()))}])'
         idx=0
         while idx<len(texts):
@@ -131,9 +141,9 @@ class dff:
 
     def virtual_get(self, text: str, idx: int) -> str:
         if len(text)<idx:
-            return self.ending2
+            return self.conf.ending2
         elif len(text)==idx:
-            return self.ending
+            return self.conf.ending
         return text[idx]
 
     def limit_and_get_width(self, texts: dff_text_event, max_width: int):
@@ -172,13 +182,13 @@ class dff:
             if len(i.text)==self.col:
                 text=[
                     (colors.comment,i.pre+i.text[:self.col]),
-                    (colors.spec_important,self.ending),
+                    (colors.spec_important,self.conf.ending),
                     (colors.comment,i.post)]
             elif len(i.text)<self.col:
                 text=[
                     (colors.comment,i.pre+i.text[:self.col]),
-                    (colors.spec_comment,self.ending+self.ending2*(self.col-len(i.text)-1)),
-                    (colors.spec_important,self.ending2),
+                    (colors.spec_comment,self.conf.ending+self.conf.ending2*(self.col-len(i.text)-1)),
+                    (colors.spec_important,self.conf.ending2),
                     (colors.comment,i.post)]
             else:
                 text=[
@@ -241,14 +251,7 @@ class dff:
         del self.history[-1]
         return True
     def run(self, start_as_back: bool = False) -> str|dff_exit_enum:
-        # TODO: make this not just an option, but something more...
-        # E.G. return special value or return special exit code, e.g. 2 instead of 1 (already done)
-        exit_on_first_back=True
-
-        # TODO: make this also an option
-        skip_if_only_one=True
-
-        if len(self.slist)==1 and skip_if_only_one:
+        if len(self.slist)==1 and self.conf.skip_one:
             if start_as_back:
                 return dff_exit_enum.back
             return self.slist[0].text
@@ -262,7 +265,7 @@ class dff:
             if key=='\x1b':
                 return dff_exit_enum.exit
             elif key=='\x7f':
-                if self.back()==False and exit_on_first_back:
+                if self.back()==False and self.conf.exit_on_first_back:
                     return dff_exit_enum.back
                 continue
             ret=self.send_key(key)
@@ -270,23 +273,20 @@ class dff:
                 return ret
             self.inc_col_while_all_same()
 
-type dff_endings=tuple[str,str]
-
-def dir_run(eventdriver: dff_eventdriver, endings: dff_endings) -> str:
+def dir_run(eventdriver: dff_eventdriver, conf: dff_config) -> str:
     dir=Path('.').absolute()
 
-    # TODO: make this an option, it is for when the directory only includes one file, and when run it auto returns that file (even though you want to explore)
-    first_dont_skip_one=True
+    conf=conf._replace(exit_on_first_back=True)
 
     start_as_back=False
     first=True
     while True:
-        # TODO: implement hopping one element dir
-        # TODO: also implement hopping one element dir backwards
         result=dff(tuple(dff_entry(
             '/' if path.is_dir() else ' ',
             path.name,
-            '') for path in dir.iterdir()),eventdriver,*endings).run(start_as_back)
+            '') for path in dir.iterdir()),eventdriver,
+                   conf._replace(skip_one=False) if first and not conf.dir_first_skip_one else conf
+                   ).run(start_as_back)
         first=False
         if result==dff_exit_enum.exit:
             return str(dir)
@@ -298,51 +298,6 @@ def dir_run(eventdriver: dff_eventdriver, endings: dff_endings) -> str:
         dir=dir.joinpath(result)
         if not dir.is_dir():
             return str(dir)
-
-class dff_test_eventdriver(dff_eventdriver):
-    @override
-    def get_event(self) -> dff_event:
-        with open("/dev/tty", "r") as file:
-            fd=file.fileno()
-            old=termios.tcgetattr(fd)
-            try:
-                _ = tty.setraw(fd)
-                ch = file.read(1)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            if ch=='\x03':
-                raise KeyboardInterrupt
-            return dff_event(dff_event_enum.key,ch)
-    @override
-    def send_event(self, event:dff_block_event):
-        style_map={
-            colors.none:'',
-            colors.note:'\x1b[43m',
-            colors.comment:'\x1b[2m',
-            colors.normal:'\x1b[0m',
-            colors.important:'\x1b[1m\x1b[34m',
-            colors.spec:'\x1b[7m',
-            colors.spec_important:'\x1b[7m\x1b[1m',
-            colors.spec_comment:'\x1b[7m\x1b[2m',
-            colors.important_space:'\x1b[41m',
-        }
-        print('+'+'-'*self.gcol()+'+',file=sys.stderr)
-        for e in event:
-            print('|',end='',file=sys.stderr)
-            l=0
-            for c,i in e:
-                l+=len(i)
-                print(style_map[c],end='',file=sys.stderr)
-                print(i,end='',file=sys.stderr)
-                print('\x1b[0m',end='',file=sys.stderr)
-            print(' '*(self.gcol()-l)+'|',file=sys.stderr)
-        print('+'+'-'*self.gcol()+'+',file=sys.stderr)
-    @override
-    def grow(self):
-        return 10
-    @override
-    def gcol(self):
-        return 80
 
 class dff_json_eventdriver(dff_eventdriver):
     i: TextIOWrapper
@@ -388,15 +343,15 @@ class dff_json_eventdriver(dff_eventdriver):
     def grow(self) -> int:
         return self.row
 
-def json_run(endings:dff_endings):
+def json_run(conf: dff_config):
     eventdriver=dff_json_eventdriver(sys.stdin,sys.stdout)  # pyright: ignore[reportArgumentType]
     entries=eventdriver.entries
     if entries:
-        d=dff(entries,eventdriver,*endings)
+        d=dff(entries,eventdriver,conf)
         ret=d.run()
         eventdriver.done(ret)
     else:
-        ret_path=dir_run(eventdriver,endings)
+        ret_path=dir_run(eventdriver,conf)
         eventdriver.done(ret_path)
 
 DEFAULT_STYLES:dict[colors,tuple[int,...]]={
@@ -495,7 +450,7 @@ class dff_text_eventdriver(dff_eventdriver):
     def grow(self) -> int:
         return self.win.getmaxyx()[0]
 
-def curses_wrapped_run(win: curses.window, entries: tuple[dff_entry,...]|None, style_opt:str|None, endings: dff_endings)->dff_exit_enum|str:
+def curses_wrapped_run(win: curses.window, entries: tuple[dff_entry,...]|None, style_opt:str|None, conf: dff_config)->dff_exit_enum|str:
     curses.set_escdelay(50)
     win.notimeout(False)
     curses.use_default_colors()
@@ -507,20 +462,20 @@ def curses_wrapped_run(win: curses.window, entries: tuple[dff_entry,...]|None, s
     eventdriver=dff_text_eventdriver(attrs,win)
 
     if entries:
-        d=dff(entries,eventdriver,*endings)
+        d=dff(entries,eventdriver,conf)
         ret=d.run()
     else:
-        ret=dir_run(eventdriver,endings)
+        ret=dir_run(eventdriver,conf)
     return ret
 
-def curses_run(entries: tuple[dff_entry,...]|None, style: str|None, endings: dff_endings) -> str|dff_exit_enum:
+def curses_run(entries: tuple[dff_entry,...]|None, style: str|None, conf: dff_config) -> str|dff_exit_enum:
     with open('/dev/tty','r') as fd:
         old_stdout=os.dup(1)
         old_stdin=os.dup(0)
         _=os.dup2(2,1)
         _=os.dup2(fd.fileno(),0)
         try:
-            ret=curses.wrapper(curses_wrapped_run,entries,style,endings)
+            ret=curses.wrapper(curses_wrapped_run,entries,style,conf)
         finally:
             _=os.dup2(old_stdout,1)
             _=os.dup2(old_stdin,0)
@@ -549,10 +504,14 @@ def main():
     endings_args: str=args.ending  # pyright: ignore[reportAny]
     zero: bool=args.zero  # pyright: ignore[reportAny]
 
-    endings=parse_endings_opt(endings_args)
+    ending,ending2=parse_endings_opt(endings_args)
+    conf=dff_config(
+        ending=ending,
+        ending2=ending2
+    )
 
     if json_args:
-        json_run(endings)
+        json_run(conf)
         return
 
     if sys.stdin.isatty():
@@ -563,7 +522,7 @@ def main():
         entries=tuple(dff_entry('',i.rstrip('\n'),'') for i in sys.stdin)
 
 
-    ret=curses_run(entries,style_args,endings)
+    ret=curses_run(entries,style_args,conf)
     if isinstance(ret,str):
         print(ret)
     else:
