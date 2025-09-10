@@ -16,7 +16,7 @@ M.color_to_hl={
     [M.colors.none]='Whitespace',
     [M.colors.note]='DiffAdd',
     [M.colors.comment]='Comment',
-    [M.colors.normal]='NormalFloat',
+    [M.colors.normal]='Normal',
     [M.colors.important]='Title',
     [M.colors.spec]='Special',
     [M.colors.spec_important]='Visual',
@@ -78,9 +78,12 @@ local function render(packet,buf,win)
     vim.api.nvim__redraw({cursor=true,flush=true})
 end
 local function getchar_or_resized()
-    vim.cmd.sleep('5ms')
-    local ch=vim.fn.getchar(0)
-    if ch~=0 then return ch end
+    while true do
+        vim.cmd.sleep('5ms')
+        local ch=vim.fn.getchar(0)
+        if ch~=0 then return ch end
+        vim.api.nvim__redraw({cursor=true,flush=true})
+    end
 end
 function M.run_dir(dir)
     local buf=vim.api.nvim_create_buf(false,true)
@@ -91,7 +94,9 @@ function M.run_dir(dir)
         relative='editor',
         height=vim.o.lines,
         width=vim.o.columns,
+        style='minimal',
     })
+    vim.wo[win].winhl='Normal:FloatNormal'
     local bin=get_binary()
     local stdout={}
     local obj=vim.system({bin,'--json'},{cwd=dir,stdout=function (_,event)
