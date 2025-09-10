@@ -117,4 +117,8 @@ function M.run_dir(dir)
         send_packet(obj,getchar_or_resized())
     end
 end
+function M.file_expl(dir)
+    local path=M.run_dir(dir)
+    vim.cmd.edit(path)
+end
 return M
