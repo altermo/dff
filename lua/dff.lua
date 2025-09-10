@@ -99,18 +99,21 @@ function M.run_dir(dir)
             stdout[1]=event
         end
     end,stdin=true})
-    vim.api.nvim_create_autocmd('SafeState',{callback=function ()
+    local function close()
         obj:kill(1)
         ---TODO: print binary error, if it errors
         if vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_close(win,true)
         end
-    end,once=true})
+        close=function () end
+    end
+    vim.api.nvim_create_autocmd('SafeState',{callback=close,once=true})
     assert(wait_for_event(stdout)[1]=='ready')
     send_packet(obj)
     while true do
         local event,packet=unpack(wait_for_event(stdout))
         if event=='exit' then
+            close()
             return packet
         end
         render(packet,buf,win)
