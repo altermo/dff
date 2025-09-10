@@ -324,7 +324,10 @@ class dff_json_eventdriver(dff_eventdriver):
         self.entries=js.get("entries",None)  # pyright: ignore[reportAttributeAccessIssue]
     @override
     def get_event(self) -> dff_event:
-        js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
+        try:
+            js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
+        except UnicodeDecodeError:
+            return dff_event(dff_event_enum.redraw,"")
         self.col=js["col"]
         self.row=js["row"]
         if js.get("key"):
