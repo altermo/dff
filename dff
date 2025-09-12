@@ -277,6 +277,35 @@ class dff:
                 return ret
             self.inc_col_while_all_same()
 
+def format_dir(dir: Path) -> str:
+    # home=Path.home()
+    # if dir.is_relative_to(home):
+    #     dir='~' / dir.relative_to(home)
+    total_len=len(str(dir))
+    parts=list(dir.parts)
+    current_dir=Path(parts[0]).expanduser()
+    if parts[0]=='/': parts[0]=''
+    for n,i in enumerate(parts[1:-1]):
+        if total_len<40:
+            break
+        current_dir/=i
+        path_len=0
+        if (current_dir/'.git').exists():
+            parts[n+1]=i
+            continue
+        while True:
+            path_len+=1
+            if i[:path_len]=='.':
+                continue
+            elif len(i)==path_len:
+                break
+            elif len([j for j in current_dir.parent.iterdir() if (j.name[:path_len]==i[:path_len])])<2:
+                break
+        parts[n+1]=i[:path_len]
+        total_len+=len(i[:path_len])-len(i)
+    return str('/'.join(parts))
+
+
 def dir_run(eventdriver: dff_eventdriver, conf: dff_config) -> str:
     dir=Path('.').absolute()
 
@@ -290,7 +319,7 @@ def dir_run(eventdriver: dff_eventdriver, conf: dff_config) -> str:
             path.name,
             '') for path in dir.iterdir()),eventdriver,
                    conf._replace(skip_one=False) if first and not conf.dir_first_skip_one else conf,
-                   str(dir) if conf.dir_print_current_directory else None).run(start_as_back)
+                   format_dir(dir) if conf.dir_print_current_directory else None).run(start_as_back)
         first=False
         if result==dff_exit_enum.exit:
             return str(dir)
