@@ -78,11 +78,15 @@ local function render(packet,buf,win)
     vim.api.nvim__redraw({cursor=true,flush=true})
 end
 local function getchar_or_resized()
+    local row,col=vim.o.lines,vim.o.columns
     while true do
         vim.cmd.sleep('5ms')
         local ch=vim.fn.getchar(0)
         if ch~=0 then return ch end
         vim.api.nvim__redraw({cursor=true,flush=true})
+        if row~=vim.o.lines or col~=vim.o.columns then
+            return
+        end
     end
 end
 function M.run_dir(dir)
