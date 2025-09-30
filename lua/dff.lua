@@ -1,3 +1,6 @@
+---@class dff.conf
+---@field window 'fullscreen'|'inline'?
+
 local M={ns=vim.api.nvim_create_namespace'dff'}
 ---@enum dff.colors
 M.colors={
@@ -39,21 +42,18 @@ local function wait_for_event(stdout)
     return vim.json.decode(json)
 end
 ---@param obj vim.SystemObj
-local function send_packet(obj,key)
+local function send_packet(obj,key,win)
     if key==vim.keycode'<bs>' then
         key=0x7f
     end
     local packet={
-        --TODO: window rows/columns
-        row=vim.o.lines,
-        col=vim.o.columns,
+        row=vim.api.nvim_win_get_height(win),
+        col=vim.api.nvim_win_get_width(win),
         key=key
     }
     obj:write(vim.json.encode(packet)..'\n')
 end
 local function render(packet,buf,win)
-    vim.api.nvim_win_set_height(win,vim.o.lines)
-    vim.api.nvim_win_set_width(win,vim.o.columns)
     vim.api.nvim_buf_clear_namespace(buf,M.ns,0,-1)
     local lines={}
     for _,entries in ipairs(packet) do
@@ -89,17 +89,36 @@ local function getchar_or_resized()
         end
     end
 end
-function M.run_dir(dir)
+---@param conf dff.conf?
+function M.run_dir(dir,conf)
+    conf=conf or {}
     local buf=vim.api.nvim_create_buf(false,true)
     vim.bo[buf].bufhidden='wipe'
-    local win=vim.api.nvim_open_win(buf,true,{
-        row=0,
-        col=0,
-        relative='editor',
-        height=vim.o.lines,
-        width=vim.o.columns,
-        style='minimal',
-    })
+    local win
+    local basewin
+    if conf.window=='fullscreen' then
+        win=vim.api.nvim_open_win(buf,true,{
+            row=0,
+            col=0,
+            relative='editor',
+            height=vim.o.lines,
+            width=vim.o.columns,
+            style='minimal',
+        })
+    elseif conf.window=='inline' or (conf.window==nil) then
+        basewin=vim.api.nvim_get_current_win()
+        local basewinconf=vim.api.nvim_win_get_config(basewin)
+        win=vim.api.nvim_open_win(buf,true,{
+            relative='win',
+            row=0,
+            col=0,
+            height=basewinconf.height,
+            width=basewinconf.width,
+            style='minimal',
+        })
+    else
+        error('NotImplemented')
+    end
     vim.wo[win].winhl='Normal:FloatNormal'
     local bin=get_binary()
     local stdout={}
@@ -121,7 +140,7 @@ function M.run_dir(dir)
     end
     vim.api.nvim_create_autocmd('SafeState',{callback=close,once=true})
     assert(wait_for_event(stdout)[1]=='ready')
-    send_packet(obj)
+    send_packet(obj,nil,win)
     while true do
         local event,packet=unpack(wait_for_event(stdout))
         if event=='exit' then
@@ -129,11 +148,20 @@ function M.run_dir(dir)
             return packet
         end
         render(packet,buf,win)
-        send_packet(obj,getchar_or_resized())
+        local ch=getchar_or_resized()
+        if conf.window=='fullscreen' then
+            vim.api.nvim_win_set_height(win,vim.o.lines)
+            vim.api.nvim_win_set_width(win,vim.o.columns)
+        elseif conf.window=='inline' or (conf.window==nil) then
+            vim.api.nvim_win_set_height(win,vim.api.nvim_win_get_height(basewin))
+            vim.api.nvim_win_set_width(win,vim.api.nvim_win_get_width(basewin))
+        end
+        send_packet(obj,ch,win)
     end
 end
-function M.file_expl(dir)
-    local path=M.run_dir(dir)
+---@param conf dff.conf?
+function M.file_expl(dir,conf)
+    local path=M.run_dir(dir,conf)
     vim.cmd.edit(vim.uv.fs_realpath(path) or path)
 end
 return M
