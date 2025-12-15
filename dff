@@ -476,9 +476,9 @@ class dff_text_eventdriver(dff_eventdriver):
         self.win.clear()
         for y_rev,e in enumerate(event[::-1]):
             self.win.move(len(event)-y_rev-1,1)
-            for i in e:
+            for i in e[::-1]:
                 color,text=i
-                self.win.addstr(text,self.attrs[color])
+                self.win.insstr(text,self.attrs[color])
     @override
     def gcol(self) -> int:
         return self.win.getmaxyx()[1]
