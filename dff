@@ -420,6 +420,11 @@ class dff_text_eventdriver(dff_eventdriver):
             for i in e[::-1]:
                 color,text=i
                 self.win.insstr(text,self.attrs[color])
+        if event[0]:
+            first_line_len=sum(len(i[1]) for i in event[0])
+            self.win.move(0,first_line_len+1
+                          -(first_line_len>=(self.gcol()-1))
+                          -(first_line_len>=(self.gcol())))
     @override
     def gcol(self) -> int:
         return self.win.getmaxyx()[1]
