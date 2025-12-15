@@ -4,7 +4,6 @@ from abc import ABC,abstractmethod
 import argparse
 import curses
 from io import TextIOWrapper
-import json
 import os
 from typing import ClassVar, NamedTuple, override
 from dataclasses import dataclass, field
@@ -332,64 +331,6 @@ def dir_run(eventdriver: dff_eventdriver, conf: dff_config) -> str:
         if not dir.is_dir():
             return str(dir)
 
-class dff_json_eventdriver(dff_eventdriver):
-    i: TextIOWrapper
-    o: TextIOWrapper
-    col: int
-    row: int
-    entries: tuple[dff_entry,...]|None
-    def get_line(self) -> str:
-        return self.i.readline()
-    def write_line(self, text: str):
-        _=self.o.write(text+'\n')
-        self.o.flush()
-    def __init__(self, i: TextIOWrapper, o: TextIOWrapper):
-        self.i=i
-        self.o=o
-        self.write_line(json.dumps(['ready']))
-        js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
-        self.col=js["col"]
-        self.row=js["row"]
-        self.entries=js.get("entries",None)  # pyright: ignore[reportAttributeAccessIssue]
-    @override
-    def get_event(self) -> dff_event:
-        try:
-            js: dict[str,int]=json.loads(self.get_line())  # pyright: ignore[reportAny]
-        except UnicodeDecodeError:
-            return dff_event(dff_event_enum.redraw,"")
-        self.col=js["col"]
-        self.row=js["row"]
-        if js.get("key"):
-            try:
-                return dff_event(dff_event_enum.key,chr(js["key"]))
-            except UnicodeDecodeError:
-                pass
-        return dff_event(dff_event_enum.redraw,"")
-    @override
-    def send_event(self, event: dff_block_event) -> None:
-        self.write_line(json.dumps(['event',event],cls=type('',(json.JSONEncoder,),{
-            "default": (lambda _,x: x.value if isinstance(x,Enum) else x)  # pyright: ignore[reportUnknownLambdaType, reportAny]
-        })))
-    def done(self, ret: str|dff_exit_enum) -> None:
-        self.write_line(json.dumps(['exit',ret]))
-    @override
-    def gcol(self) -> int:
-        return self.col
-    @override
-    def grow(self) -> int:
-        return self.row
-
-def json_run(conf: dff_config):
-    eventdriver=dff_json_eventdriver(sys.stdin,sys.stdout)  # pyright: ignore[reportArgumentType]
-    entries=eventdriver.entries
-    if entries:
-        d=dff(entries,eventdriver,conf)
-        ret=d.run()
-        eventdriver.done(ret)
-    else:
-        ret_path=dir_run(eventdriver,conf)
-        eventdriver.done(ret_path)
-
 DEFAULT_STYLES:dict[colors,tuple[int,...]]={
     # Blue(important): 94,104
     # Grey(comment): 90
@@ -523,8 +464,6 @@ def parse_endings_opt(endings_opt: str) -> tuple[str,str]:
 
 def main():
     parser=argparse.ArgumentParser()
-    _=parser.add_argument('--json',action='store_true',
-                        help='Use json packets. Intended to be used by external applications, not intended to be used by end user')
     _=parser.add_argument('--style',
                         help=f'A table of colorname to CSI-m codes, where delimiter is `;` and assignment is `:` (example: `normal:92;comment:32`). Only a limited number of CSI-m codes are supported. Possible colornames are: {', '.join(colors._member_names_)}.')
     ending_default='?&'
@@ -535,7 +474,6 @@ def main():
 
     args = parser.parse_args()
 
-    json_args: bool=args.json  # pyright: ignore[reportAny]
     style_args: str|None=args.style  # pyright: ignore[reportAny]
     endings_args: str=args.ending  # pyright: ignore[reportAny]
     zero: bool=args.zero  # pyright: ignore[reportAny]
@@ -545,10 +483,6 @@ def main():
         ending=ending,
         ending2=ending2
     )
-
-    if json_args:
-        json_run(conf)
-        return
 
     if sys.stdin.isatty():
         entries=None
