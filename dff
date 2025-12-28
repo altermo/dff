@@ -477,17 +477,29 @@ def main():
                           help=f'2 characters. Used as EOL and past-EOL. (default: `{ending_default}`)')
     _=parser.add_argument('-0','--null',dest='zero',action='store_true',
                           help='Input items are terminated by a null character instead of by newline.')
+    _=parser.add_argument('-S','--no-skip-one',dest='skip_one',action='store_false',
+                          help='Auto return(/skip) one item lists.')
+    _=parser.add_argument('-f','--dir-first-skip-one',dest='dir_first_skip_one',action='store_true',
+                          help='Do not auto return one item list on startup in dir-mode')
+    _=parser.add_argument('-P','--no-dir-print-current-directory',dest='dir_print_current_directory',action='store_false',
+                          help='Do not print active directory in dir-mode')
 
     args = parser.parse_args()
 
     style_args: str|None=args.style  # pyright: ignore[reportAny]
     endings_args: str=args.ending  # pyright: ignore[reportAny]
     zero: bool=args.zero  # pyright: ignore[reportAny]
+    skip_one: bool=args.skip_one
+    dir_first_skip_one: bool=args.dir_first_skip_one
+    dir_print_current_directory: bool=args.dir_print_current_directory
 
     ending,ending2=parse_endings_opt(endings_args)
     conf=dff_config(
         ending=ending,
-        ending2=ending2
+        ending2=ending2,
+        skip_one=skip_one,
+        dir_first_skip_one=dir_first_skip_one,
+        dir_print_current_directory=dir_print_current_directory,
     )
 
     if sys.stdin.isatty():
