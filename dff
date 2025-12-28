@@ -129,6 +129,7 @@ class dff:
                 idx+=1
                 continue
             del texts[idx]
+            idx-=1
             for i,txt in enumerate(parts):
                 idx+=1
                 if i%2==0:
